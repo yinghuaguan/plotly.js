@@ -435,182 +435,143 @@ function fromByteArray (uint8) {
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-var objectCreate = Object.create || objectCreatePolyfill
-var objectKeys = Object.keys || objectKeysPolyfill
-var bind = Function.prototype.bind || functionBindPolyfill
+'use strict';
 
-function EventEmitter() {
-  if (!this._events || !Object.prototype.hasOwnProperty.call(this, '_events')) {
-    this._events = objectCreate(null);
-    this._eventsCount = 0;
+var R = typeof Reflect === 'object' ? Reflect : null
+var ReflectApply = R && typeof R.apply === 'function'
+  ? R.apply
+  : function ReflectApply(target, receiver, args) {
+    return Function.prototype.apply.call(target, receiver, args);
   }
 
-  this._maxListeners = this._maxListeners || undefined;
+var ReflectOwnKeys
+if (R && typeof R.ownKeys === 'function') {
+  ReflectOwnKeys = R.ownKeys
+} else if (Object.getOwnPropertySymbols) {
+  ReflectOwnKeys = function ReflectOwnKeys(target) {
+    return Object.getOwnPropertyNames(target)
+      .concat(Object.getOwnPropertySymbols(target));
+  };
+} else {
+  ReflectOwnKeys = function ReflectOwnKeys(target) {
+    return Object.getOwnPropertyNames(target);
+  };
+}
+
+function ProcessEmitWarning(warning) {
+  if (console && console.warn) console.warn(warning);
+}
+
+var NumberIsNaN = Number.isNaN || function NumberIsNaN(value) {
+  return value !== value;
+}
+
+function EventEmitter() {
+  EventEmitter.init.call(this);
 }
 module.exports = EventEmitter;
+module.exports.once = once;
 
 // Backwards-compat with node 0.10.x
 EventEmitter.EventEmitter = EventEmitter;
 
 EventEmitter.prototype._events = undefined;
+EventEmitter.prototype._eventsCount = 0;
 EventEmitter.prototype._maxListeners = undefined;
 
 // By default EventEmitters will print a warning if more than 10 listeners are
 // added to it. This is a useful default which helps finding memory leaks.
 var defaultMaxListeners = 10;
 
-var hasDefineProperty;
-try {
-  var o = {};
-  if (Object.defineProperty) Object.defineProperty(o, 'x', { value: 0 });
-  hasDefineProperty = o.x === 0;
-} catch (err) { hasDefineProperty = false }
-if (hasDefineProperty) {
-  Object.defineProperty(EventEmitter, 'defaultMaxListeners', {
-    enumerable: true,
-    get: function() {
-      return defaultMaxListeners;
-    },
-    set: function(arg) {
-      // check whether the input is a positive number (whose value is zero or
-      // greater and not a NaN).
-      if (typeof arg !== 'number' || arg < 0 || arg !== arg)
-        throw new TypeError('"defaultMaxListeners" must be a positive number');
-      defaultMaxListeners = arg;
-    }
-  });
-} else {
-  EventEmitter.defaultMaxListeners = defaultMaxListeners;
+function checkListener(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
+  }
 }
+
+Object.defineProperty(EventEmitter, 'defaultMaxListeners', {
+  enumerable: true,
+  get: function() {
+    return defaultMaxListeners;
+  },
+  set: function(arg) {
+    if (typeof arg !== 'number' || arg < 0 || NumberIsNaN(arg)) {
+      throw new RangeError('The value of "defaultMaxListeners" is out of range. It must be a non-negative number. Received ' + arg + '.');
+    }
+    defaultMaxListeners = arg;
+  }
+});
+
+EventEmitter.init = function() {
+
+  if (this._events === undefined ||
+      this._events === Object.getPrototypeOf(this)._events) {
+    this._events = Object.create(null);
+    this._eventsCount = 0;
+  }
+
+  this._maxListeners = this._maxListeners || undefined;
+};
 
 // Obviously not all Emitters should be limited to 10. This function allows
 // that to be increased. Set to zero for unlimited.
 EventEmitter.prototype.setMaxListeners = function setMaxListeners(n) {
-  if (typeof n !== 'number' || n < 0 || isNaN(n))
-    throw new TypeError('"n" argument must be a positive number');
+  if (typeof n !== 'number' || n < 0 || NumberIsNaN(n)) {
+    throw new RangeError('The value of "n" is out of range. It must be a non-negative number. Received ' + n + '.');
+  }
   this._maxListeners = n;
   return this;
 };
 
-function $getMaxListeners(that) {
+function _getMaxListeners(that) {
   if (that._maxListeners === undefined)
     return EventEmitter.defaultMaxListeners;
   return that._maxListeners;
 }
 
 EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
-  return $getMaxListeners(this);
+  return _getMaxListeners(this);
 };
 
-// These standalone emit* functions are used to optimize calling of event
-// handlers for fast cases because emit() itself often has a variable number of
-// arguments and can be deoptimized because of that. These functions always have
-// the same number of arguments and thus do not get deoptimized, so the code
-// inside them can execute faster.
-function emitNone(handler, isFn, self) {
-  if (isFn)
-    handler.call(self);
-  else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      listeners[i].call(self);
-  }
-}
-function emitOne(handler, isFn, self, arg1) {
-  if (isFn)
-    handler.call(self, arg1);
-  else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      listeners[i].call(self, arg1);
-  }
-}
-function emitTwo(handler, isFn, self, arg1, arg2) {
-  if (isFn)
-    handler.call(self, arg1, arg2);
-  else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      listeners[i].call(self, arg1, arg2);
-  }
-}
-function emitThree(handler, isFn, self, arg1, arg2, arg3) {
-  if (isFn)
-    handler.call(self, arg1, arg2, arg3);
-  else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      listeners[i].call(self, arg1, arg2, arg3);
-  }
-}
-
-function emitMany(handler, isFn, self, args) {
-  if (isFn)
-    handler.apply(self, args);
-  else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      listeners[i].apply(self, args);
-  }
-}
-
 EventEmitter.prototype.emit = function emit(type) {
-  var er, handler, len, args, i, events;
+  var args = [];
+  for (var i = 1; i < arguments.length; i++) args.push(arguments[i]);
   var doError = (type === 'error');
 
-  events = this._events;
-  if (events)
-    doError = (doError && events.error == null);
+  var events = this._events;
+  if (events !== undefined)
+    doError = (doError && events.error === undefined);
   else if (!doError)
     return false;
 
   // If there is no 'error' event listener then throw.
   if (doError) {
-    if (arguments.length > 1)
-      er = arguments[1];
+    var er;
+    if (args.length > 0)
+      er = args[0];
     if (er instanceof Error) {
+      // Note: The comments on the `throw` lines are intentional, they show
+      // up in Node's output if this results in an unhandled exception.
       throw er; // Unhandled 'error' event
-    } else {
-      // At least give some kind of context to the user
-      var err = new Error('Unhandled "error" event. (' + er + ')');
-      err.context = er;
-      throw err;
     }
-    return false;
+    // At least give some kind of context to the user
+    var err = new Error('Unhandled error.' + (er ? ' (' + er.message + ')' : ''));
+    err.context = er;
+    throw err; // Unhandled 'error' event
   }
 
-  handler = events[type];
+  var handler = events[type];
 
-  if (!handler)
+  if (handler === undefined)
     return false;
 
-  var isFn = typeof handler === 'function';
-  len = arguments.length;
-  switch (len) {
-      // fast cases
-    case 1:
-      emitNone(handler, isFn, this);
-      break;
-    case 2:
-      emitOne(handler, isFn, this, arguments[1]);
-      break;
-    case 3:
-      emitTwo(handler, isFn, this, arguments[1], arguments[2]);
-      break;
-    case 4:
-      emitThree(handler, isFn, this, arguments[1], arguments[2], arguments[3]);
-      break;
-      // slower
-    default:
-      args = new Array(len - 1);
-      for (i = 1; i < len; i++)
-        args[i - 1] = arguments[i];
-      emitMany(handler, isFn, this, args);
+  if (typeof handler === 'function') {
+    ReflectApply(handler, this, args);
+  } else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      ReflectApply(listeners[i], this, args);
   }
 
   return true;
@@ -621,19 +582,18 @@ function _addListener(target, type, listener, prepend) {
   var events;
   var existing;
 
-  if (typeof listener !== 'function')
-    throw new TypeError('"listener" argument must be a function');
+  checkListener(listener);
 
   events = target._events;
-  if (!events) {
-    events = target._events = objectCreate(null);
+  if (events === undefined) {
+    events = target._events = Object.create(null);
     target._eventsCount = 0;
   } else {
     // To avoid recursion in the case that type === "newListener"! Before
     // adding it to the listeners, first emit "newListener".
-    if (events.newListener) {
+    if (events.newListener !== undefined) {
       target.emit('newListener', type,
-          listener.listener ? listener.listener : listener);
+                  listener.listener ? listener.listener : listener);
 
       // Re-assign `events` because a newListener handler could have caused the
       // this._events to be assigned to a new object
@@ -642,7 +602,7 @@ function _addListener(target, type, listener, prepend) {
     existing = events[type];
   }
 
-  if (!existing) {
+  if (existing === undefined) {
     // Optimize the case of one listener. Don't need the extra array object.
     existing = events[type] = listener;
     ++target._eventsCount;
@@ -650,33 +610,29 @@ function _addListener(target, type, listener, prepend) {
     if (typeof existing === 'function') {
       // Adding the second element, need to change to array.
       existing = events[type] =
-          prepend ? [listener, existing] : [existing, listener];
-    } else {
+        prepend ? [listener, existing] : [existing, listener];
       // If we've already got an array, just append.
-      if (prepend) {
-        existing.unshift(listener);
-      } else {
-        existing.push(listener);
-      }
+    } else if (prepend) {
+      existing.unshift(listener);
+    } else {
+      existing.push(listener);
     }
 
     // Check for listener leak
-    if (!existing.warned) {
-      m = $getMaxListeners(target);
-      if (m && m > 0 && existing.length > m) {
-        existing.warned = true;
-        var w = new Error('Possible EventEmitter memory leak detected. ' +
-            existing.length + ' "' + String(type) + '" listeners ' +
-            'added. Use emitter.setMaxListeners() to ' +
-            'increase limit.');
-        w.name = 'MaxListenersExceededWarning';
-        w.emitter = target;
-        w.type = type;
-        w.count = existing.length;
-        if (typeof console === 'object' && console.warn) {
-          console.warn('%s: %s', w.name, w.message);
-        }
-      }
+    m = _getMaxListeners(target);
+    if (m > 0 && existing.length > m && !existing.warned) {
+      existing.warned = true;
+      // No error code for this since it is a Warning
+      // eslint-disable-next-line no-restricted-syntax
+      var w = new Error('Possible EventEmitter memory leak detected. ' +
+                          existing.length + ' ' + String(type) + ' listeners ' +
+                          'added. Use emitter.setMaxListeners() to ' +
+                          'increase limit');
+      w.name = 'MaxListenersExceededWarning';
+      w.emitter = target;
+      w.type = type;
+      w.count = existing.length;
+      ProcessEmitWarning(w);
     }
   }
 
@@ -698,44 +654,29 @@ function onceWrapper() {
   if (!this.fired) {
     this.target.removeListener(this.type, this.wrapFn);
     this.fired = true;
-    switch (arguments.length) {
-      case 0:
-        return this.listener.call(this.target);
-      case 1:
-        return this.listener.call(this.target, arguments[0]);
-      case 2:
-        return this.listener.call(this.target, arguments[0], arguments[1]);
-      case 3:
-        return this.listener.call(this.target, arguments[0], arguments[1],
-            arguments[2]);
-      default:
-        var args = new Array(arguments.length);
-        for (var i = 0; i < args.length; ++i)
-          args[i] = arguments[i];
-        this.listener.apply(this.target, args);
-    }
+    if (arguments.length === 0)
+      return this.listener.call(this.target);
+    return this.listener.apply(this.target, arguments);
   }
 }
 
 function _onceWrap(target, type, listener) {
   var state = { fired: false, wrapFn: undefined, target: target, type: type, listener: listener };
-  var wrapped = bind.call(onceWrapper, state);
+  var wrapped = onceWrapper.bind(state);
   wrapped.listener = listener;
   state.wrapFn = wrapped;
   return wrapped;
 }
 
 EventEmitter.prototype.once = function once(type, listener) {
-  if (typeof listener !== 'function')
-    throw new TypeError('"listener" argument must be a function');
+  checkListener(listener);
   this.on(type, _onceWrap(this, type, listener));
   return this;
 };
 
 EventEmitter.prototype.prependOnceListener =
     function prependOnceListener(type, listener) {
-      if (typeof listener !== 'function')
-        throw new TypeError('"listener" argument must be a function');
+      checkListener(listener);
       this.prependListener(type, _onceWrap(this, type, listener));
       return this;
     };
@@ -745,20 +686,19 @@ EventEmitter.prototype.removeListener =
     function removeListener(type, listener) {
       var list, events, position, i, originalListener;
 
-      if (typeof listener !== 'function')
-        throw new TypeError('"listener" argument must be a function');
+      checkListener(listener);
 
       events = this._events;
-      if (!events)
+      if (events === undefined)
         return this;
 
       list = events[type];
-      if (!list)
+      if (list === undefined)
         return this;
 
       if (list === listener || list.listener === listener) {
         if (--this._eventsCount === 0)
-          this._events = objectCreate(null);
+          this._events = Object.create(null);
         else {
           delete events[type];
           if (events.removeListener)
@@ -780,35 +720,38 @@ EventEmitter.prototype.removeListener =
 
         if (position === 0)
           list.shift();
-        else
+        else {
           spliceOne(list, position);
+        }
 
         if (list.length === 1)
           events[type] = list[0];
 
-        if (events.removeListener)
+        if (events.removeListener !== undefined)
           this.emit('removeListener', type, originalListener || listener);
       }
 
       return this;
     };
 
+EventEmitter.prototype.off = EventEmitter.prototype.removeListener;
+
 EventEmitter.prototype.removeAllListeners =
     function removeAllListeners(type) {
       var listeners, events, i;
 
       events = this._events;
-      if (!events)
+      if (events === undefined)
         return this;
 
       // not listening for removeListener, no need to emit
-      if (!events.removeListener) {
+      if (events.removeListener === undefined) {
         if (arguments.length === 0) {
-          this._events = objectCreate(null);
+          this._events = Object.create(null);
           this._eventsCount = 0;
-        } else if (events[type]) {
+        } else if (events[type] !== undefined) {
           if (--this._eventsCount === 0)
-            this._events = objectCreate(null);
+            this._events = Object.create(null);
           else
             delete events[type];
         }
@@ -817,7 +760,7 @@ EventEmitter.prototype.removeAllListeners =
 
       // emit removeListener for all listeners on all events
       if (arguments.length === 0) {
-        var keys = objectKeys(events);
+        var keys = Object.keys(events);
         var key;
         for (i = 0; i < keys.length; ++i) {
           key = keys[i];
@@ -825,7 +768,7 @@ EventEmitter.prototype.removeAllListeners =
           this.removeAllListeners(key);
         }
         this.removeAllListeners('removeListener');
-        this._events = objectCreate(null);
+        this._events = Object.create(null);
         this._eventsCount = 0;
         return this;
       }
@@ -834,7 +777,7 @@ EventEmitter.prototype.removeAllListeners =
 
       if (typeof listeners === 'function') {
         this.removeListener(type, listeners);
-      } else if (listeners) {
+      } else if (listeners !== undefined) {
         // LIFO order
         for (i = listeners.length - 1; i >= 0; i--) {
           this.removeListener(type, listeners[i]);
@@ -847,17 +790,18 @@ EventEmitter.prototype.removeAllListeners =
 function _listeners(target, type, unwrap) {
   var events = target._events;
 
-  if (!events)
+  if (events === undefined)
     return [];
 
   var evlistener = events[type];
-  if (!evlistener)
+  if (evlistener === undefined)
     return [];
 
   if (typeof evlistener === 'function')
     return unwrap ? [evlistener.listener || evlistener] : [evlistener];
 
-  return unwrap ? unwrapListeners(evlistener) : arrayClone(evlistener, evlistener.length);
+  return unwrap ?
+    unwrapListeners(evlistener) : arrayClone(evlistener, evlistener.length);
 }
 
 EventEmitter.prototype.listeners = function listeners(type) {
@@ -880,12 +824,12 @@ EventEmitter.prototype.listenerCount = listenerCount;
 function listenerCount(type) {
   var events = this._events;
 
-  if (events) {
+  if (events !== undefined) {
     var evlistener = events[type];
 
     if (typeof evlistener === 'function') {
       return 1;
-    } else if (evlistener) {
+    } else if (evlistener !== undefined) {
       return evlistener.length;
     }
   }
@@ -894,21 +838,20 @@ function listenerCount(type) {
 }
 
 EventEmitter.prototype.eventNames = function eventNames() {
-  return this._eventsCount > 0 ? Reflect.ownKeys(this._events) : [];
+  return this._eventsCount > 0 ? ReflectOwnKeys(this._events) : [];
 };
-
-// About 1.5x faster than the two-arg version of Array#splice().
-function spliceOne(list, index) {
-  for (var i = index, k = i + 1, n = list.length; k < n; i += 1, k += 1)
-    list[i] = list[k];
-  list.pop();
-}
 
 function arrayClone(arr, n) {
   var copy = new Array(n);
   for (var i = 0; i < n; ++i)
     copy[i] = arr[i];
   return copy;
+}
+
+function spliceOne(list, index) {
+  for (; index + 1 < list.length; index++)
+    list[index] = list[index + 1];
+  list.pop();
 }
 
 function unwrapListeners(arr) {
@@ -919,27 +862,37 @@ function unwrapListeners(arr) {
   return ret;
 }
 
-function objectCreatePolyfill(proto) {
-  var F = function() {};
-  F.prototype = proto;
-  return new F;
-}
-function objectKeysPolyfill(obj) {
-  var keys = [];
-  for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) {
-    keys.push(k);
-  }
-  return k;
-}
-function functionBindPolyfill(context) {
-  var fn = this;
-  return function () {
-    return fn.apply(context, arguments);
-  };
+function once(emitter, name) {
+  return new Promise(function (resolve, reject) {
+    function eventListener() {
+      if (errorListener !== undefined) {
+        emitter.removeListener('error', errorListener);
+      }
+      resolve([].slice.call(arguments));
+    };
+    var errorListener;
+
+    // Adding an error listener is not optional because
+    // if an error is thrown on an event emitter we cannot
+    // guarantee that the actual event we are waiting will
+    // be fired. The result could be a silent way to create
+    // memory or file descriptor leaks, which is something
+    // we should avoid.
+    if (name !== 'error') {
+      errorListener = function errorListener(err) {
+        emitter.removeListener(name, eventListener);
+        reject(err);
+      };
+
+      emitter.once('error', errorListener);
+    }
+
+    emitter.once(name, eventListener);
+  });
 }
 
 },{}],18:[function(_dereq_,module,exports){
-(function (Buffer){
+(function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -2718,7 +2671,7 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-}).call(this,_dereq_("buffer").Buffer)
+}).call(this)}).call(this,_dereq_("buffer").Buffer)
 },{"base64-js":15,"buffer":18,"ieee754":27}],19:[function(_dereq_,module,exports){
 // https://d3js.org/d3-time-format/ v2.2.3 Copyright 2019 Mike Bostock
 (function (global, factory) {
@@ -13359,7 +13312,7 @@ Object.defineProperty(exports, '__esModule', { value: true });
   if (typeof define === "function" && define.amd) this.d3 = d3, define(d3); else if (typeof module === "object" && module.exports) module.exports = d3; else this.d3 = d3;
 }();
 },{}],22:[function(_dereq_,module,exports){
-(function (process,global){
+(function (process,global){(function (){
 /*!
  * @overview es6-promise - a tiny implementation of Promises/A+.
  * @copyright Copyright (c) 2014 Yehuda Katz, Tom Dale, Stefan Penner and contributors (Conversion to ES6 API by Jake Archibald)
@@ -14535,7 +14488,7 @@ return Promise$1;
 
 
 
-}).call(this,_dereq_('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+}).call(this)}).call(this,_dereq_('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{"_process":57}],23:[function(_dereq_,module,exports){
 /**
  * inspired by is-number <https://github.com/jonschlinkert/is-number>
@@ -14611,7 +14564,7 @@ function fromQuat(out, q) {
     return out;
 };
 },{}],25:[function(_dereq_,module,exports){
-(function (global){
+(function (global){(function (){
 'use strict'
 
 var isBrowser = _dereq_('is-browser')
@@ -14626,7 +14579,7 @@ else {
 
 module.exports = hasHover
 
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{"is-browser":44}],26:[function(_dereq_,module,exports){
 'use strict'
 
@@ -14755,7 +14708,7 @@ module.exports = function (buffer, filepath) {
 };
 
 },{"./types":31}],29:[function(_dereq_,module,exports){
-(function (Buffer){
+(function (Buffer){(function (){
 'use strict';
 
 var fs = _dereq_('fs');
@@ -14883,7 +14836,7 @@ module.exports = function (input, callback) {
 
 module.exports.types = Object.keys(typeHandlers);
 
-}).call(this,_dereq_("buffer").Buffer)
+}).call(this)}).call(this,_dereq_("buffer").Buffer)
 },{"./detector":28,"./types":31,"buffer":18,"fs":16,"path":48}],30:[function(_dereq_,module,exports){
 'use strict';
 
@@ -15521,7 +15474,7 @@ module.exports = {
 };
 
 },{}],42:[function(_dereq_,module,exports){
-(function (Buffer){
+(function (Buffer){(function (){
 'use strict';
 
 // based on http://www.compix.com/fileformattif.htm
@@ -15643,7 +15596,7 @@ module.exports = {
   'calculate': calculate
 };
 
-}).call(this,_dereq_("buffer").Buffer)
+}).call(this)}).call(this,_dereq_("buffer").Buffer)
 },{"../readUInt":30,"buffer":18,"fs":16}],43:[function(_dereq_,module,exports){
 'use strict';
 
@@ -15843,9 +15796,9 @@ function parseValues(args) {
 }
 
 },{}],48:[function(_dereq_,module,exports){
-(function (process){
-// .dirname, .basename, and .extname methods are extracted from Node.js v8.11.1,
-// backported and transplited with Babel, with backwards-compat fixes
+(function (process){(function (){
+// 'path' module extracted from Node.js v8.11.1 (only the posix part)
+// transplited with Babel
 
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -15868,286 +15821,513 @@ function parseValues(args) {
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// resolves . and .. elements in a path array with directory names there
-// must be no slashes, empty elements, or device names (c:\) in the array
-// (so also no leading and trailing slashes - it does not distinguish
-// relative and absolute paths)
-function normalizeArray(parts, allowAboveRoot) {
-  // if the path tries to go above the root, `up` ends up > 0
-  var up = 0;
-  for (var i = parts.length - 1; i >= 0; i--) {
-    var last = parts[i];
-    if (last === '.') {
-      parts.splice(i, 1);
-    } else if (last === '..') {
-      parts.splice(i, 1);
-      up++;
-    } else if (up) {
-      parts.splice(i, 1);
-      up--;
-    }
-  }
+'use strict';
 
-  // if the path is allowed to go above the root, restore leading ..s
-  if (allowAboveRoot) {
-    for (; up--; up) {
-      parts.unshift('..');
-    }
+function assertPath(path) {
+  if (typeof path !== 'string') {
+    throw new TypeError('Path must be a string. Received ' + JSON.stringify(path));
   }
-
-  return parts;
 }
 
-// path.resolve([from ...], to)
-// posix version
-exports.resolve = function() {
-  var resolvedPath = '',
-      resolvedAbsolute = false;
-
-  for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {
-    var path = (i >= 0) ? arguments[i] : process.cwd();
-
-    // Skip empty and invalid entries
-    if (typeof path !== 'string') {
-      throw new TypeError('Arguments to path.resolve must be strings');
-    } else if (!path) {
-      continue;
-    }
-
-    resolvedPath = path + '/' + resolvedPath;
-    resolvedAbsolute = path.charAt(0) === '/';
-  }
-
-  // At this point the path should be resolved to a full absolute path, but
-  // handle relative paths to be safe (might happen when process.cwd() fails)
-
-  // Normalize the path
-  resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {
-    return !!p;
-  }), !resolvedAbsolute).join('/');
-
-  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
-};
-
-// path.normalize(path)
-// posix version
-exports.normalize = function(path) {
-  var isAbsolute = exports.isAbsolute(path),
-      trailingSlash = substr(path, -1) === '/';
-
-  // Normalize the path
-  path = normalizeArray(filter(path.split('/'), function(p) {
-    return !!p;
-  }), !isAbsolute).join('/');
-
-  if (!path && !isAbsolute) {
-    path = '.';
-  }
-  if (path && trailingSlash) {
-    path += '/';
-  }
-
-  return (isAbsolute ? '/' : '') + path;
-};
-
-// posix version
-exports.isAbsolute = function(path) {
-  return path.charAt(0) === '/';
-};
-
-// posix version
-exports.join = function() {
-  var paths = Array.prototype.slice.call(arguments, 0);
-  return exports.normalize(filter(paths, function(p, index) {
-    if (typeof p !== 'string') {
-      throw new TypeError('Arguments to path.join must be strings');
-    }
-    return p;
-  }).join('/'));
-};
-
-
-// path.relative(from, to)
-// posix version
-exports.relative = function(from, to) {
-  from = exports.resolve(from).substr(1);
-  to = exports.resolve(to).substr(1);
-
-  function trim(arr) {
-    var start = 0;
-    for (; start < arr.length; start++) {
-      if (arr[start] !== '') break;
-    }
-
-    var end = arr.length - 1;
-    for (; end >= 0; end--) {
-      if (arr[end] !== '') break;
-    }
-
-    if (start > end) return [];
-    return arr.slice(start, end - start + 1);
-  }
-
-  var fromParts = trim(from.split('/'));
-  var toParts = trim(to.split('/'));
-
-  var length = Math.min(fromParts.length, toParts.length);
-  var samePartsLength = length;
-  for (var i = 0; i < length; i++) {
-    if (fromParts[i] !== toParts[i]) {
-      samePartsLength = i;
+// Resolves . and .. elements in a path with directory names
+function normalizeStringPosix(path, allowAboveRoot) {
+  var res = '';
+  var lastSegmentLength = 0;
+  var lastSlash = -1;
+  var dots = 0;
+  var code;
+  for (var i = 0; i <= path.length; ++i) {
+    if (i < path.length)
+      code = path.charCodeAt(i);
+    else if (code === 47 /*/*/)
       break;
-    }
-  }
-
-  var outputParts = [];
-  for (var i = samePartsLength; i < fromParts.length; i++) {
-    outputParts.push('..');
-  }
-
-  outputParts = outputParts.concat(toParts.slice(samePartsLength));
-
-  return outputParts.join('/');
-};
-
-exports.sep = '/';
-exports.delimiter = ':';
-
-exports.dirname = function (path) {
-  if (typeof path !== 'string') path = path + '';
-  if (path.length === 0) return '.';
-  var code = path.charCodeAt(0);
-  var hasRoot = code === 47 /*/*/;
-  var end = -1;
-  var matchedSlash = true;
-  for (var i = path.length - 1; i >= 1; --i) {
-    code = path.charCodeAt(i);
+    else
+      code = 47 /*/*/;
     if (code === 47 /*/*/) {
-        if (!matchedSlash) {
-          end = i;
-          break;
+      if (lastSlash === i - 1 || dots === 1) {
+        // NOOP
+      } else if (lastSlash !== i - 1 && dots === 2) {
+        if (res.length < 2 || lastSegmentLength !== 2 || res.charCodeAt(res.length - 1) !== 46 /*.*/ || res.charCodeAt(res.length - 2) !== 46 /*.*/) {
+          if (res.length > 2) {
+            var lastSlashIndex = res.lastIndexOf('/');
+            if (lastSlashIndex !== res.length - 1) {
+              if (lastSlashIndex === -1) {
+                res = '';
+                lastSegmentLength = 0;
+              } else {
+                res = res.slice(0, lastSlashIndex);
+                lastSegmentLength = res.length - 1 - res.lastIndexOf('/');
+              }
+              lastSlash = i;
+              dots = 0;
+              continue;
+            }
+          } else if (res.length === 2 || res.length === 1) {
+            res = '';
+            lastSegmentLength = 0;
+            lastSlash = i;
+            dots = 0;
+            continue;
+          }
+        }
+        if (allowAboveRoot) {
+          if (res.length > 0)
+            res += '/..';
+          else
+            res = '..';
+          lastSegmentLength = 2;
         }
       } else {
-      // We saw the first non-path separator
-      matchedSlash = false;
+        if (res.length > 0)
+          res += '/' + path.slice(lastSlash + 1, i);
+        else
+          res = path.slice(lastSlash + 1, i);
+        lastSegmentLength = i - lastSlash - 1;
+      }
+      lastSlash = i;
+      dots = 0;
+    } else if (code === 46 /*.*/ && dots !== -1) {
+      ++dots;
+    } else {
+      dots = -1;
     }
   }
-
-  if (end === -1) return hasRoot ? '/' : '.';
-  if (hasRoot && end === 1) {
-    // return '//';
-    // Backwards-compat fix:
-    return '/';
-  }
-  return path.slice(0, end);
-};
-
-function basename(path) {
-  if (typeof path !== 'string') path = path + '';
-
-  var start = 0;
-  var end = -1;
-  var matchedSlash = true;
-  var i;
-
-  for (i = path.length - 1; i >= 0; --i) {
-    if (path.charCodeAt(i) === 47 /*/*/) {
-        // If we reached a path separator that was not part of a set of path
-        // separators at the end of the string, stop now
-        if (!matchedSlash) {
-          start = i + 1;
-          break;
-        }
-      } else if (end === -1) {
-      // We saw the first non-path separator, mark this as the end of our
-      // path component
-      matchedSlash = false;
-      end = i + 1;
-    }
-  }
-
-  if (end === -1) return '';
-  return path.slice(start, end);
+  return res;
 }
 
-// Uses a mixed approach for backwards-compatibility, as ext behavior changed
-// in new Node.js versions, so only basename() above is backported here
-exports.basename = function (path, ext) {
-  var f = basename(path);
-  if (ext && f.substr(-1 * ext.length) === ext) {
-    f = f.substr(0, f.length - ext.length);
+function _format(sep, pathObject) {
+  var dir = pathObject.dir || pathObject.root;
+  var base = pathObject.base || (pathObject.name || '') + (pathObject.ext || '');
+  if (!dir) {
+    return base;
   }
-  return f;
-};
+  if (dir === pathObject.root) {
+    return dir + base;
+  }
+  return dir + sep + base;
+}
 
-exports.extname = function (path) {
-  if (typeof path !== 'string') path = path + '';
-  var startDot = -1;
-  var startPart = 0;
-  var end = -1;
-  var matchedSlash = true;
-  // Track the state of characters (if any) we see before our first dot and
-  // after any path separator we find
-  var preDotState = 0;
-  for (var i = path.length - 1; i >= 0; --i) {
-    var code = path.charCodeAt(i);
-    if (code === 47 /*/*/) {
-        // If we reached a path separator that was not part of a set of path
-        // separators at the end of the string, stop now
-        if (!matchedSlash) {
-          startPart = i + 1;
-          break;
-        }
+var posix = {
+  // path.resolve([from ...], to)
+  resolve: function resolve() {
+    var resolvedPath = '';
+    var resolvedAbsolute = false;
+    var cwd;
+
+    for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+      var path;
+      if (i >= 0)
+        path = arguments[i];
+      else {
+        if (cwd === undefined)
+          cwd = process.cwd();
+        path = cwd;
+      }
+
+      assertPath(path);
+
+      // Skip empty entries
+      if (path.length === 0) {
         continue;
       }
-    if (end === -1) {
-      // We saw the first non-path separator, mark this as the end of our
-      // extension
-      matchedSlash = false;
-      end = i + 1;
-    }
-    if (code === 46 /*.*/) {
-        // If this is our first dot, mark it as the start of our extension
-        if (startDot === -1)
-          startDot = i;
-        else if (preDotState !== 1)
-          preDotState = 1;
-    } else if (startDot !== -1) {
-      // We saw a non-dot and non-path separator before our dot, so we should
-      // have a good chance at having a non-empty extension
-      preDotState = -1;
-    }
-  }
 
-  if (startDot === -1 || end === -1 ||
-      // We saw a non-dot character immediately before the dot
-      preDotState === 0 ||
-      // The (right-most) trimmed path component is exactly '..'
-      preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
-    return '';
-  }
-  return path.slice(startDot, end);
+      resolvedPath = path + '/' + resolvedPath;
+      resolvedAbsolute = path.charCodeAt(0) === 47 /*/*/;
+    }
+
+    // At this point the path should be resolved to a full absolute path, but
+    // handle relative paths to be safe (might happen when process.cwd() fails)
+
+    // Normalize the path
+    resolvedPath = normalizeStringPosix(resolvedPath, !resolvedAbsolute);
+
+    if (resolvedAbsolute) {
+      if (resolvedPath.length > 0)
+        return '/' + resolvedPath;
+      else
+        return '/';
+    } else if (resolvedPath.length > 0) {
+      return resolvedPath;
+    } else {
+      return '.';
+    }
+  },
+
+  normalize: function normalize(path) {
+    assertPath(path);
+
+    if (path.length === 0) return '.';
+
+    var isAbsolute = path.charCodeAt(0) === 47 /*/*/;
+    var trailingSeparator = path.charCodeAt(path.length - 1) === 47 /*/*/;
+
+    // Normalize the path
+    path = normalizeStringPosix(path, !isAbsolute);
+
+    if (path.length === 0 && !isAbsolute) path = '.';
+    if (path.length > 0 && trailingSeparator) path += '/';
+
+    if (isAbsolute) return '/' + path;
+    return path;
+  },
+
+  isAbsolute: function isAbsolute(path) {
+    assertPath(path);
+    return path.length > 0 && path.charCodeAt(0) === 47 /*/*/;
+  },
+
+  join: function join() {
+    if (arguments.length === 0)
+      return '.';
+    var joined;
+    for (var i = 0; i < arguments.length; ++i) {
+      var arg = arguments[i];
+      assertPath(arg);
+      if (arg.length > 0) {
+        if (joined === undefined)
+          joined = arg;
+        else
+          joined += '/' + arg;
+      }
+    }
+    if (joined === undefined)
+      return '.';
+    return posix.normalize(joined);
+  },
+
+  relative: function relative(from, to) {
+    assertPath(from);
+    assertPath(to);
+
+    if (from === to) return '';
+
+    from = posix.resolve(from);
+    to = posix.resolve(to);
+
+    if (from === to) return '';
+
+    // Trim any leading backslashes
+    var fromStart = 1;
+    for (; fromStart < from.length; ++fromStart) {
+      if (from.charCodeAt(fromStart) !== 47 /*/*/)
+        break;
+    }
+    var fromEnd = from.length;
+    var fromLen = fromEnd - fromStart;
+
+    // Trim any leading backslashes
+    var toStart = 1;
+    for (; toStart < to.length; ++toStart) {
+      if (to.charCodeAt(toStart) !== 47 /*/*/)
+        break;
+    }
+    var toEnd = to.length;
+    var toLen = toEnd - toStart;
+
+    // Compare paths to find the longest common path from root
+    var length = fromLen < toLen ? fromLen : toLen;
+    var lastCommonSep = -1;
+    var i = 0;
+    for (; i <= length; ++i) {
+      if (i === length) {
+        if (toLen > length) {
+          if (to.charCodeAt(toStart + i) === 47 /*/*/) {
+            // We get here if `from` is the exact base path for `to`.
+            // For example: from='/foo/bar'; to='/foo/bar/baz'
+            return to.slice(toStart + i + 1);
+          } else if (i === 0) {
+            // We get here if `from` is the root
+            // For example: from='/'; to='/foo'
+            return to.slice(toStart + i);
+          }
+        } else if (fromLen > length) {
+          if (from.charCodeAt(fromStart + i) === 47 /*/*/) {
+            // We get here if `to` is the exact base path for `from`.
+            // For example: from='/foo/bar/baz'; to='/foo/bar'
+            lastCommonSep = i;
+          } else if (i === 0) {
+            // We get here if `to` is the root.
+            // For example: from='/foo'; to='/'
+            lastCommonSep = 0;
+          }
+        }
+        break;
+      }
+      var fromCode = from.charCodeAt(fromStart + i);
+      var toCode = to.charCodeAt(toStart + i);
+      if (fromCode !== toCode)
+        break;
+      else if (fromCode === 47 /*/*/)
+        lastCommonSep = i;
+    }
+
+    var out = '';
+    // Generate the relative path based on the path difference between `to`
+    // and `from`
+    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+      if (i === fromEnd || from.charCodeAt(i) === 47 /*/*/) {
+        if (out.length === 0)
+          out += '..';
+        else
+          out += '/..';
+      }
+    }
+
+    // Lastly, append the rest of the destination (`to`) path that comes after
+    // the common path parts
+    if (out.length > 0)
+      return out + to.slice(toStart + lastCommonSep);
+    else {
+      toStart += lastCommonSep;
+      if (to.charCodeAt(toStart) === 47 /*/*/)
+        ++toStart;
+      return to.slice(toStart);
+    }
+  },
+
+  _makeLong: function _makeLong(path) {
+    return path;
+  },
+
+  dirname: function dirname(path) {
+    assertPath(path);
+    if (path.length === 0) return '.';
+    var code = path.charCodeAt(0);
+    var hasRoot = code === 47 /*/*/;
+    var end = -1;
+    var matchedSlash = true;
+    for (var i = path.length - 1; i >= 1; --i) {
+      code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          if (!matchedSlash) {
+            end = i;
+            break;
+          }
+        } else {
+        // We saw the first non-path separator
+        matchedSlash = false;
+      }
+    }
+
+    if (end === -1) return hasRoot ? '/' : '.';
+    if (hasRoot && end === 1) return '//';
+    return path.slice(0, end);
+  },
+
+  basename: function basename(path, ext) {
+    if (ext !== undefined && typeof ext !== 'string') throw new TypeError('"ext" argument must be a string');
+    assertPath(path);
+
+    var start = 0;
+    var end = -1;
+    var matchedSlash = true;
+    var i;
+
+    if (ext !== undefined && ext.length > 0 && ext.length <= path.length) {
+      if (ext.length === path.length && ext === path) return '';
+      var extIdx = ext.length - 1;
+      var firstNonSlashEnd = -1;
+      for (i = path.length - 1; i >= 0; --i) {
+        var code = path.charCodeAt(i);
+        if (code === 47 /*/*/) {
+            // If we reached a path separator that was not part of a set of path
+            // separators at the end of the string, stop now
+            if (!matchedSlash) {
+              start = i + 1;
+              break;
+            }
+          } else {
+          if (firstNonSlashEnd === -1) {
+            // We saw the first non-path separator, remember this index in case
+            // we need it if the extension ends up not matching
+            matchedSlash = false;
+            firstNonSlashEnd = i + 1;
+          }
+          if (extIdx >= 0) {
+            // Try to match the explicit extension
+            if (code === ext.charCodeAt(extIdx)) {
+              if (--extIdx === -1) {
+                // We matched the extension, so mark this as the end of our path
+                // component
+                end = i;
+              }
+            } else {
+              // Extension does not match, so our result is the entire path
+              // component
+              extIdx = -1;
+              end = firstNonSlashEnd;
+            }
+          }
+        }
+      }
+
+      if (start === end) end = firstNonSlashEnd;else if (end === -1) end = path.length;
+      return path.slice(start, end);
+    } else {
+      for (i = path.length - 1; i >= 0; --i) {
+        if (path.charCodeAt(i) === 47 /*/*/) {
+            // If we reached a path separator that was not part of a set of path
+            // separators at the end of the string, stop now
+            if (!matchedSlash) {
+              start = i + 1;
+              break;
+            }
+          } else if (end === -1) {
+          // We saw the first non-path separator, mark this as the end of our
+          // path component
+          matchedSlash = false;
+          end = i + 1;
+        }
+      }
+
+      if (end === -1) return '';
+      return path.slice(start, end);
+    }
+  },
+
+  extname: function extname(path) {
+    assertPath(path);
+    var startDot = -1;
+    var startPart = 0;
+    var end = -1;
+    var matchedSlash = true;
+    // Track the state of characters (if any) we see before our first dot and
+    // after any path separator we find
+    var preDotState = 0;
+    for (var i = path.length - 1; i >= 0; --i) {
+      var code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          // If we reached a path separator that was not part of a set of path
+          // separators at the end of the string, stop now
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+      if (end === -1) {
+        // We saw the first non-path separator, mark this as the end of our
+        // extension
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === 46 /*.*/) {
+          // If this is our first dot, mark it as the start of our extension
+          if (startDot === -1)
+            startDot = i;
+          else if (preDotState !== 1)
+            preDotState = 1;
+      } else if (startDot !== -1) {
+        // We saw a non-dot and non-path separator before our dot, so we should
+        // have a good chance at having a non-empty extension
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+        // We saw a non-dot character immediately before the dot
+        preDotState === 0 ||
+        // The (right-most) trimmed path component is exactly '..'
+        preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+      return '';
+    }
+    return path.slice(startDot, end);
+  },
+
+  format: function format(pathObject) {
+    if (pathObject === null || typeof pathObject !== 'object') {
+      throw new TypeError('The "pathObject" argument must be of type Object. Received type ' + typeof pathObject);
+    }
+    return _format('/', pathObject);
+  },
+
+  parse: function parse(path) {
+    assertPath(path);
+
+    var ret = { root: '', dir: '', base: '', ext: '', name: '' };
+    if (path.length === 0) return ret;
+    var code = path.charCodeAt(0);
+    var isAbsolute = code === 47 /*/*/;
+    var start;
+    if (isAbsolute) {
+      ret.root = '/';
+      start = 1;
+    } else {
+      start = 0;
+    }
+    var startDot = -1;
+    var startPart = 0;
+    var end = -1;
+    var matchedSlash = true;
+    var i = path.length - 1;
+
+    // Track the state of characters (if any) we see before our first dot and
+    // after any path separator we find
+    var preDotState = 0;
+
+    // Get non-dir info
+    for (; i >= start; --i) {
+      code = path.charCodeAt(i);
+      if (code === 47 /*/*/) {
+          // If we reached a path separator that was not part of a set of path
+          // separators at the end of the string, stop now
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+      if (end === -1) {
+        // We saw the first non-path separator, mark this as the end of our
+        // extension
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === 46 /*.*/) {
+          // If this is our first dot, mark it as the start of our extension
+          if (startDot === -1) startDot = i;else if (preDotState !== 1) preDotState = 1;
+        } else if (startDot !== -1) {
+        // We saw a non-dot and non-path separator before our dot, so we should
+        // have a good chance at having a non-empty extension
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+    // We saw a non-dot character immediately before the dot
+    preDotState === 0 ||
+    // The (right-most) trimmed path component is exactly '..'
+    preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+      if (end !== -1) {
+        if (startPart === 0 && isAbsolute) ret.base = ret.name = path.slice(1, end);else ret.base = ret.name = path.slice(startPart, end);
+      }
+    } else {
+      if (startPart === 0 && isAbsolute) {
+        ret.name = path.slice(1, startDot);
+        ret.base = path.slice(1, end);
+      } else {
+        ret.name = path.slice(startPart, startDot);
+        ret.base = path.slice(startPart, end);
+      }
+      ret.ext = path.slice(startDot, end);
+    }
+
+    if (startPart > 0) ret.dir = path.slice(0, startPart - 1);else if (isAbsolute) ret.dir = '/';
+
+    return ret;
+  },
+
+  sep: '/',
+  delimiter: ':',
+  win32: null,
+  posix: null
 };
 
-function filter (xs, f) {
-    if (xs.filter) return xs.filter(f);
-    var res = [];
-    for (var i = 0; i < xs.length; i++) {
-        if (f(xs[i], i, xs)) res.push(xs[i]);
-    }
-    return res;
-}
+posix.posix = posix;
 
-// String.prototype.substr - negative index don't work in IE8
-var substr = 'ab'.substr(-1) === 'b'
-    ? function (str, start, len) { return str.substr(start, len) }
-    : function (str, start, len) {
-        if (start < 0) start = str.length + start;
-        return str.substr(start, len);
-    }
-;
+module.exports = posix;
 
-}).call(this,_dereq_('_process'))
+}).call(this)}).call(this,_dereq_('_process'))
 },{"_process":57}],49:[function(_dereq_,module,exports){
 /*
  * @copyright 2016 Sean Connelly (@voidqk), http://syntheti.cc
@@ -20096,6 +20276,7 @@ var d3 = _dereq_('d3');
 var Registry = _dereq_('../../registry');
 var Plots = _dereq_('../../plots/plots');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var Axes = _dereq_('../../plots/cartesian/axes');
 var Color = _dereq_('../color');
 var Drawing = _dereq_('../drawing');
@@ -20666,7 +20847,7 @@ function drawRaw(gd, options, index, subplotId, xa, ya) {
                     .classed('cursor-move', true)
                     .attr({
                         d: 'M3,3H-3V-3H3ZM0,0L' + (tailX - arrowDragHeadX) + ',' + (tailY - arrowDragHeadY),
-                        transform: 'translate(' + arrowDragHeadX + ',' + arrowDragHeadY + ')'
+                        transform: strTranslate(arrowDragHeadX, arrowDragHeadY)
                     })
                     .style('stroke-width', (strokewidth + 6) + 'px')
                     .call(Color.stroke, 'rgba(0,0,0,0)')
@@ -20713,7 +20894,7 @@ function drawRaw(gd, options, index, subplotId, xa, ya) {
                             modifyItem('ay', shiftPosition(ya, dy, 'ay', gs, options));
                         }
 
-                        arrowGroup.attr('transform', 'translate(' + dx + ',' + dy + ')');
+                        arrowGroup.attr('transform', strTranslate(dx, dy));
                         annTextGroup.attr({
                             transform: 'rotate(' + textangle + ',' +
                                    xcenter + ',' + ycenter + ')'
@@ -20798,7 +20979,7 @@ function drawRaw(gd, options, index, subplotId, xa, ya) {
                     } else return;
 
                     annTextGroup.attr({
-                        transform: 'translate(' + dx + ',' + dy + ')' + baseTextTransform
+                        transform: strTranslate(dx, dy) + baseTextTransform
                     });
 
                     setCursor(annTextGroupInner, csr);
@@ -20857,6 +21038,11 @@ var d3 = _dereq_('d3');
 var Color = _dereq_('../color');
 
 var ARROWPATHS = _dereq_('./arrow_paths');
+
+var Lib = _dereq_('../../lib');
+var strScale = Lib.strScale;
+var strRotate = Lib.strRotate;
+var strTranslate = Lib.strTranslate;
 
 /**
  * Add arrowhead(s) to a path or line element
@@ -20977,9 +21163,9 @@ module.exports = function drawArrowHead(el3, ends, options) {
                 'class': el3.attr('class'),
                 d: arrowHeadStyle.path,
                 transform:
-                    'translate(' + p.x + ',' + p.y + ')' +
-                    (rot ? 'rotate(' + (rot * 180 / Math.PI) + ')' : '') +
-                    'scale(' + arrowScale + ')'
+                    strTranslate(p.x, p.y) +
+                    strRotate(rot * 180 / Math.PI) +
+                    strScale(arrowScale)
             })
             .style({
                 fill: Color.rgb(options.arrowcolor),
@@ -20991,7 +21177,7 @@ module.exports = function drawArrowHead(el3, ends, options) {
     if(doEnd) drawhead(headStyle, end, endRot, scale);
 };
 
-},{"../color":75,"./arrow_paths":59,"d3":21}],68:[function(_dereq_,module,exports){
+},{"../../lib":203,"../color":75,"./arrow_paths":59,"d3":21}],68:[function(_dereq_,module,exports){
 /**
 * Copyright 2012-2020, Plotly, Inc.
 * All rights reserved.
@@ -21861,6 +22047,7 @@ var Registry = _dereq_('../../registry');
 var Axes = _dereq_('../../plots/cartesian/axes');
 var dragElement = _dereq_('../dragelement');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var extendFlat = _dereq_('../../lib/extend').extendFlat;
 var setCursor = _dereq_('../../lib/setcursor');
 var Drawing = _dereq_('../drawing');
@@ -22115,10 +22302,10 @@ function drawColorBar(g, opts, gd) {
 
     ax.setScale();
 
-    g.attr('transform', 'translate(' + Math.round(gs.l) + ',' + Math.round(gs.t) + ')');
+    g.attr('transform', strTranslate(Math.round(gs.l), Math.round(gs.t)));
 
     var titleCont = g.select('.' + cn.cbtitleunshift)
-        .attr('transform', 'translate(-' + Math.round(gs.l) + ',-' + Math.round(gs.t) + ')');
+        .attr('transform', strTranslate(-Math.round(gs.l), -Math.round(gs.t)));
 
     var axLayer = g.select('.' + cn.cbaxis);
     var titleEl;
@@ -22230,15 +22417,15 @@ function drawColorBar(g, opts, gd) {
                     titleTrans[1] += (1 - nlines) * lineSize;
                 }
 
-                titleGroup.attr('transform', 'translate(' + titleTrans + ')');
+                titleGroup.attr('transform', strTranslate(titleTrans[0], titleTrans[1]));
                 ax.setScale();
             }
         }
 
         g.selectAll('.' + cn.cbfills + ',.' + cn.cblines)
-            .attr('transform', 'translate(0,' + Math.round(gs.h * (1 - ax.domain[1])) + ')');
+            .attr('transform', strTranslate(0, Math.round(gs.h * (1 - ax.domain[1]))));
 
-        axLayer.attr('transform', 'translate(0,' + Math.round(-gs.t) + ')');
+        axLayer.attr('transform', strTranslate(0, Math.round(-gs.t)));
 
         var fills = g.select('.' + cn.cbfills)
             .selectAll('rect.' + cn.cbfill)
@@ -22374,7 +22561,7 @@ function drawColorBar(g, opts, gd) {
 
         // fix positioning for xanchor!='left'
         var xoffset = ({center: 0.5, right: 1}[opts.xanchor] || 0) * outerwidth;
-        g.attr('transform', 'translate(' + (gs.l - xoffset) + ',' + gs.t + ')');
+        g.attr('transform', strTranslate(gs.l - xoffset, gs.t));
 
         // auto margin adjustment
         var marginOpts = {};
@@ -22430,7 +22617,7 @@ function makeEditable(g, opts, gd) {
             setCursor(g);
         },
         moveFn: function(dx, dy) {
-            g.attr('transform', t0 + ' ' + 'translate(' + dx + ',' + dy + ')');
+            g.attr('transform', t0 + strTranslate(dx, dy));
 
             xf = dragElement.align(opts._xLeftFrac + (dx / gs.w), opts._thickFrac,
                 0, 1, opts.xanchor);
@@ -24221,6 +24408,7 @@ var Registry = _dereq_('../../registry');
 var Color = _dereq_('../color');
 var Colorscale = _dereq_('../colorscale');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 
 var xmlnsNamespaces = _dereq_('../../constants/xmlns_namespaces');
@@ -24282,7 +24470,7 @@ drawing.translatePoint = function(d, sel, xa, ya) {
         if(sel.node().nodeName === 'text') {
             sel.attr('x', x).attr('y', y);
         } else {
-            sel.attr('transform', 'translate(' + x + ',' + y + ')');
+            sel.attr('transform', strTranslate(x, y));
         }
     } else {
         return false;
@@ -24908,7 +25096,7 @@ function textPointPosition(s, textPosition, fontSize, markerRadius) {
 
     // fix the overall text group position
     s.attr('text-anchor', h);
-    group.attr('transform', 'translate(' + dx + ',' + dy + ')');
+    group.attr('transform', strTranslate(dx, dy));
 }
 
 function extracTextFontSize(d, trace) {
@@ -25299,7 +25487,7 @@ drawing.setTranslate = function(element, x, y) {
     y = y || 0;
 
     transform = transform.replace(re, '').trim();
-    transform += ' translate(' + x + ', ' + y + ')';
+    transform += strTranslate(x, y);
     transform = transform.trim();
 
     element[setter]('transform', transform);
@@ -25333,7 +25521,7 @@ drawing.setScale = function(element, x, y) {
     y = y || 1;
 
     transform = transform.replace(re, '').trim();
-    transform += ' scale(' + x + ', ' + y + ')';
+    transform += 'scale(' + x + ',' + y + ')';
     transform = transform.trim();
 
     element[setter]('transform', transform);
@@ -25352,7 +25540,7 @@ drawing.setPointGroupScale = function(selection, xScale, yScale) {
     // The same scale transform for every point:
     var scale = (xScale === 1 && yScale === 1) ?
         '' :
-        ' scale(' + xScale + ',' + yScale + ')';
+        'scale(' + xScale + ',' + yScale + ')';
 
     selection.each(function() {
         var t = (this.getAttribute('transform') || '').replace(SCALE_RE, '');
@@ -25383,9 +25571,9 @@ drawing.setTextPointsScale = function(selection, xScale, yScale) {
             transforms = [];
         } else {
             transforms = [
-                'translate(' + x + ',' + y + ')',
+                strTranslate(x, y),
                 'scale(' + xScale + ',' + yScale + ')',
-                'translate(' + (-x) + ',' + (-y) + ')',
+                strTranslate(-x, -y),
             ];
         }
 
@@ -25393,7 +25581,7 @@ drawing.setTextPointsScale = function(selection, xScale, yScale) {
             transforms.push(existingTransform);
         }
 
-        el.attr('transform', transforms.join(' '));
+        el.attr('transform', transforms.join(''));
     });
 };
 
@@ -27084,6 +27272,8 @@ var isNumeric = _dereq_('fast-isnumeric');
 var tinycolor = _dereq_('tinycolor2');
 
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
+var strRotate = Lib.strRotate;
 var Events = _dereq_('../../lib/events');
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var overrideCursor = _dereq_('../../lib/override_cursor');
@@ -28031,7 +28221,7 @@ function createHoverText(hoverData, opts, gd) {
             Drawing.setClipUrl(ltext, clipPath ? clipId : null, gd);
         }
 
-        label.attr('transform', 'translate(' + lx + ',' + ly + ')');
+        label.attr('transform', strTranslate(lx, ly));
 
         // remove the "close but not quite" points
         // because of error bars, only take up to a space
@@ -28139,7 +28329,7 @@ function createHoverText(hoverData, opts, gd) {
                 ly = outerHeight - txHeight;
             }
         }
-        legendContainer.attr('transform', 'translate(' + lx + ',' + ly + ')');
+        legendContainer.attr('transform', strTranslate(lx, ly));
 
         return legendContainer;
     }
@@ -28288,8 +28478,8 @@ function createHoverText(hoverData, opts, gd) {
 
         tx.attr('text-anchor', d.anchor);
         if(tx2width) tx2.attr('text-anchor', d.anchor);
-        g.attr('transform', 'translate(' + htx + ',' + hty + ')' +
-            (rotateLabels ? 'rotate(' + YANGLE + ')' : ''));
+        g.attr('transform', strTranslate(htx, hty) +
+            (rotateLabels ? strRotate(YANGLE) : ''));
     });
 
     return hoverLabels;
@@ -30306,6 +30496,14 @@ module.exports = {
         editType: 'legend',
         
     },
+    itemwidth: {
+        valType: 'number',
+        min: 30,
+        dflt: 30,
+        
+        editType: 'legend',
+        
+    },
 
     itemclick: {
         valType: 'enumerated',
@@ -30414,8 +30612,6 @@ module.exports = {
 
     // number of px between legend title and (left) side of legend (always in x direction and from inner border)
     titlePad: 2,
-    // number of px between legend symbol and legend text (always in x direction)
-    textGap: 40,
     // number of px between each legend item (x and/or y direction)
     itemGap: 5
 };
@@ -30536,6 +30732,7 @@ module.exports = function legendDefaults(layoutIn, layoutOut, fullData) {
     if(helpers.isGrouped(layoutOut.legend)) coerce('tracegroupgap');
 
     coerce('itemsizing');
+    coerce('itemwidth');
 
     coerce('itemclick');
     coerce('itemdoubleclick');
@@ -30969,7 +31166,8 @@ function drawTexts(g, gd, opts) {
         .call(Drawing.font, opts.font)
         .text(isEditable ? ensureLength(name, maxNameLength) : name);
 
-    svgTextUtils.positionText(textEl, constants.textGap, 0);
+    var textGap = opts.itemwidth + constants.itemGap * 2;
+    svgTextUtils.positionText(textEl, textGap, 0);
 
     if(isEditable) {
         textEl.call(svgTextUtils.makeEditable, {gd: gd, text: name})
@@ -31099,7 +31297,8 @@ function computeTextDimensions(g, gd, opts) {
         // to avoid getBoundingClientRect
         var textY = lineHeight * ((textLines - 1) / 2 - 0.3);
         if(legendItem) {
-            svgTextUtils.positionText(textEl, constants.textGap, -textY);
+            var textGap = opts.itemwidth + constants.itemGap * 2;
+            svgTextUtils.positionText(textEl, textGap, -textY);
         } else { // case of title
             svgTextUtils.positionText(textEl, constants.titlePad + bw, lineHeight + bw);
         }
@@ -31152,8 +31351,8 @@ function computeLegendDimensions(gd, groups, traces, opts) {
 
     var bw = opts.borderwidth;
     var bw2 = 2 * bw;
-    var textGap = constants.textGap;
     var itemGap = constants.itemGap;
+    var textGap = opts.itemwidth + itemGap * 2;
     var endPad = 2 * (bw + itemGap);
 
     var yanchor = getYanchor(opts);
@@ -31760,6 +31959,7 @@ var d3 = _dereq_('d3');
 
 var Registry = _dereq_('../../registry');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var Drawing = _dereq_('../drawing');
 var Color = _dereq_('../color');
 var extractOpts = _dereq_('../colorscale/helpers').extractOpts;
@@ -31767,6 +31967,8 @@ var extractOpts = _dereq_('../colorscale/helpers').extractOpts;
 var subTypes = _dereq_('../../traces/scatter/subtypes');
 var stylePie = _dereq_('../../traces/pie/style_one');
 var pieCastOption = _dereq_('../../traces/pie/helpers').castOption;
+
+var constants = _dereq_('./constants');
 
 var CST_MARKER_SIZE = 12;
 var CST_LINE_WIDTH = 5;
@@ -31778,6 +31980,9 @@ module.exports = function style(s, gd, legend) {
     var fullLayout = gd._fullLayout;
     if(!legend) legend = fullLayout.legend;
     var constantItemSizing = legend.itemsizing === 'constant';
+    var itemWidth = legend.itemwidth;
+    var centerPos = (itemWidth + constants.itemGap * 2) / 2;
+    var centerTransform = strTranslate(centerPos, 0);
 
     var boundLineWidth = function(mlw, cont, max, cst) {
         var v;
@@ -31806,7 +32011,7 @@ module.exports = function style(s, gd, legend) {
         } else {
             var factor = {top: 1, bottom: -1}[valign];
             var markerOffsetY = factor * (0.5 * (lineHeight - height + 3));
-            layers.attr('transform', 'translate(0,' + markerOffsetY + ')');
+            layers.attr('transform', strTranslate(0, markerOffsetY));
         }
 
         var fill = layers
@@ -31909,7 +32114,7 @@ module.exports = function style(s, gd, legend) {
             .data(showFill || showGradientFill ? [d] : []);
         fill.enter().append('path').classed('js-fill', true);
         fill.exit().remove();
-        fill.attr('d', pathStart + 'h30v6h-30z')
+        fill.attr('d', pathStart + 'h' + itemWidth + 'v6h-' + itemWidth + 'z')
             .call(showFill ? Drawing.fillGroupStyle : fillGradient);
 
         if(showLine || showGradientLine) {
@@ -31929,7 +32134,7 @@ module.exports = function style(s, gd, legend) {
         // though there *is* no vertical variation in this case.
         // so add an invisibly small angle to the line
         // This issue (and workaround) exist across (Mac) Chrome, FF, and Safari
-        line.attr('d', pathStart + (showGradientLine ? 'l30,0.0001' : 'h30'))
+        line.attr('d', pathStart + (showGradientLine ? 'l' + itemWidth + ',0.0001' : 'h' + itemWidth))
             .call(showLine ? Drawing.lineGroupStyle : lineGradient);
     }
 
@@ -32019,7 +32224,7 @@ module.exports = function style(s, gd, legend) {
         // make sure marker is on the bottom, in case it enters after text
         pts.enter().insert('path', ':first-child')
             .classed('scatterpts', true)
-            .attr('transform', 'translate(20,0)');
+            .attr('transform', centerTransform);
         pts.exit().remove();
         pts.call(Drawing.pointStyle, tMod, gd);
 
@@ -32031,7 +32236,7 @@ module.exports = function style(s, gd, legend) {
             .data(showText ? dMod : []);
         txt.enter()
             .append('g').classed('pointtext', true)
-                .append('text').attr('transform', 'translate(20,0)');
+                .append('text').attr('transform', centerTransform);
         txt.exit().remove();
         txt.selectAll('text').call(Drawing.textPointStyle, tMod, gd);
     }
@@ -32059,7 +32264,7 @@ module.exports = function style(s, gd, legend) {
             .selectAll('path.legendwaterfall')
             .data(ptsData);
         pts.enter().append('path').classed('legendwaterfall', true)
-            .attr('transform', 'translate(20,0)')
+            .attr('transform', centerTransform)
             .style('stroke-miterlimit', 1);
         pts.exit().remove();
 
@@ -32099,7 +32304,7 @@ module.exports = function style(s, gd, legend) {
             .data(isVisible ? [d] : []);
         barpath.enter().append('path').classed('legend' + desiredType, true)
             .attr('d', 'M6,6H-6V-6H6Z')
-            .attr('transform', 'translate(20,0)');
+            .attr('transform', centerTransform);
         barpath.exit().remove();
 
         barpath.each(function(d) {
@@ -32123,7 +32328,7 @@ module.exports = function style(s, gd, legend) {
         pts.enter().append('path').classed('legendbox', true)
             // if we want the median bar, prepend M6,0H-6
             .attr('d', 'M6,6H-6V-6H6Z')
-            .attr('transform', 'translate(20,0)');
+            .attr('transform', centerTransform);
         pts.exit().remove();
 
         pts.each(function() {
@@ -32163,7 +32368,7 @@ module.exports = function style(s, gd, legend) {
                 if(i) return 'M-15,0H-8M-8,6V-6H8Z'; // increasing
                 return 'M15,0H8M8,-6V6H-8Z'; // decreasing
             })
-            .attr('transform', 'translate(20,0)')
+            .attr('transform', centerTransform)
             .style('stroke-miterlimit', 1);
         pts.exit().remove();
 
@@ -32190,7 +32395,7 @@ module.exports = function style(s, gd, legend) {
                 if(i) return 'M-15,0H0M-8,-6V0'; // increasing
                 return 'M15,0H0M8,6V0'; // decreasing
             })
-            .attr('transform', 'translate(20,0)')
+            .attr('transform', centerTransform)
             .style('stroke-miterlimit', 1);
         pts.exit().remove();
 
@@ -32226,7 +32431,7 @@ module.exports = function style(s, gd, legend) {
             .data(isVisible ? [d] : []);
         pts.enter().append('path').classed('legend' + desiredType, true)
             .attr('d', 'M6,6H-6V-6H6Z')
-            .attr('transform', 'translate(20,0)');
+            .attr('transform', centerTransform);
         pts.exit().remove();
 
         if(pts.size()) {
@@ -32324,7 +32529,7 @@ module.exports = function style(s, gd, legend) {
             .selectAll('path.legend3dandfriends')
             .data(ptsData);
         pts.enter().append('path').classed('legend3dandfriends', true)
-            .attr('transform', 'translate(20,0)')
+            .attr('transform', centerTransform)
             .style('stroke-miterlimit', 1);
         pts.exit().remove();
 
@@ -32372,7 +32577,7 @@ function getGradientDirection(reversescale, isRadial) {
     return str + (reversescale ? '' : 'reversed');
 }
 
-},{"../../lib":203,"../../registry":295,"../../traces/pie/helpers":408,"../../traces/pie/style_one":414,"../../traces/scatter/subtypes":441,"../color":75,"../colorscale/helpers":86,"../drawing":97,"d3":21}],134:[function(_dereq_,module,exports){
+},{"../../lib":203,"../../registry":295,"../../traces/pie/helpers":408,"../../traces/pie/style_one":414,"../../traces/scatter/subtypes":441,"../color":75,"../colorscale/helpers":86,"../drawing":97,"./constants":126,"d3":21}],134:[function(_dereq_,module,exports){
 /**
 * Copyright 2012-2020, Plotly, Inc.
 * All rights reserved.
@@ -34039,6 +34244,7 @@ var Plots = _dereq_('../../plots/plots');
 var Color = _dereq_('../color');
 var Drawing = _dereq_('../drawing');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var axisIds = _dereq_('../../plots/cartesian/axis_ids');
 
@@ -34219,9 +34425,7 @@ function reposition(gd, buttons, opts, axName, selector) {
 
         // TODO add buttongap attribute
 
-        button.attr('transform', 'translate(' +
-            (borderWidth + width) + ',' + borderWidth +
-        ')');
+        button.attr('transform', strTranslate(borderWidth + width, borderWidth));
 
         rect.attr({
             x: 0,
@@ -34274,7 +34478,7 @@ function reposition(gd, buttons, opts, axName, selector) {
         t: height * FROM_TL[yanchor]
     });
 
-    selector.attr('transform', 'translate(' + lx + ',' + ly + ')');
+    selector.attr('transform', strTranslate(lx, ly));
 }
 
 },{"../../constants/alignment":177,"../../lib":203,"../../lib/svg_text_utils":224,"../../plots/cartesian/axis_ids":251,"../../plots/plots":282,"../../registry":295,"../color":75,"../drawing":97,"./constants":139,"./get_update_object":142,"d3":21}],142:[function(_dereq_,module,exports){
@@ -34625,6 +34829,7 @@ var Registry = _dereq_('../../registry');
 var Plots = _dereq_('../../plots/plots');
 
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var Drawing = _dereq_('../drawing');
 var Color = _dereq_('../color');
 var Titles = _dereq_('../titles');
@@ -34730,7 +34935,7 @@ module.exports = function(gd) {
             opts._offsetShift + constants.extraPad
         );
 
-        rangeSlider.attr('transform', 'translate(' + x + ',' + y + ')');
+        rangeSlider.attr('transform', strTranslate(x, y));
 
         // update data <--> pixel coordinate conversion methods
 
@@ -34991,10 +35196,10 @@ function setPixelRange(rangeSlider, gd, axisOpts, opts, oppAxisOpts, oppAxisRang
     var xMax = Math.round(clampHandle(pixelMax - hw2)) + offset;
 
     rangeSlider.select('g.' + constants.grabberMinClassName)
-        .attr('transform', 'translate(' + xMin + ',' + offset + ')');
+        .attr('transform', strTranslate(xMin, offset));
 
     rangeSlider.select('g.' + constants.grabberMaxClassName)
-        .attr('transform', 'translate(' + xMax + ',' + offset + ')');
+        .attr('transform', strTranslate(xMax, offset));
 }
 
 function drawBg(rangeSlider, gd, axisOpts, opts) {
@@ -35016,7 +35221,7 @@ function drawBg(rangeSlider, gd, axisOpts, opts) {
     bg.attr({
         width: opts._width + borderCorrect,
         height: opts._height + borderCorrect,
-        transform: 'translate(' + offsetShift + ',' + offsetShift + ')',
+        transform: strTranslate(offsetShift, offsetShift),
         fill: opts.bgcolor,
         stroke: opts.bordercolor,
         'stroke-width': lw
@@ -38351,6 +38556,7 @@ var Plots = _dereq_('../../plots/plots');
 var Color = _dereq_('../color');
 var Drawing = _dereq_('../drawing');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var arrayEditor = _dereq_('../../plot_api/plot_template').arrayEditor;
 
@@ -38909,7 +39115,7 @@ function setGripPosition(sliderGroup, sliderOpts, doTransition) {
 
     // Drawing.setTranslate doesn't work here becasue of the transition duck-typing.
     // It's also not necessary because there are no other transitions to preserve.
-    el.attr('transform', 'translate(' + (x - constants.gripWidth * 0.5) + ',' + (sliderOpts._dims.currentValueTotalHeight) + ')');
+    el.attr('transform', strTranslate(x - constants.gripWidth * 0.5, sliderOpts._dims.currentValueTotalHeight));
 }
 
 // Convert a number from [0-1] to a pixel position relative to the slider group container:
@@ -39005,6 +39211,7 @@ var isNumeric = _dereq_('fast-isnumeric');
 var Plots = _dereq_('../../plots/plots');
 var Registry = _dereq_('../../registry');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var Drawing = _dereq_('../drawing');
 var Color = _dereq_('../color');
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
@@ -39125,7 +39332,7 @@ function draw(gd, titleClass, options) {
                 transformVal += 'rotate(' + [transform.rotate, attributes.x, attributes.y] + ')';
             }
             if(transform.offset) {
-                transformVal += 'translate(0, ' + transform.offset + ')';
+                transformVal += strTranslate(0, transform.offset);
             }
         } else {
             transformVal = null;
@@ -39203,7 +39410,7 @@ function draw(gd, titleClass, options) {
                     top: [0, -shift],
                     bottom: [0, shift]
                 }[avoid.side];
-                titleGroup.attr('transform', 'translate(' + shiftTemplate + ')');
+                titleGroup.attr('transform', strTranslate(shiftTemplate[0], shiftTemplate[1]));
             }
         }
     }
@@ -44873,6 +45080,18 @@ lib.isHidden = function(gd) {
     return !display || display === 'none';
 };
 
+lib.strTranslate = function(x, y) {
+    return (x || y) ? 'translate(' + x + ',' + y + ')' : '';
+};
+
+lib.strRotate = function(a) {
+    return a ? 'rotate(' + a + ')' : '';
+};
+
+lib.strScale = function(s) {
+    return s !== 1 ? 'scale(' + s + ')' : '';
+};
+
 /** Return transform text for bar bar-like rectangles and pie-like slices
  *  @param {object} transform
  *  - targetX: desired position on the x-axis
@@ -44899,13 +45118,11 @@ lib.getTextTransform = function(transform) {
     else if(scale > 1) scale = 1;
 
     return (
-        'translate(' +
-            (targetX - scale * (textX + anchorX)) + ',' +
-            (targetY - scale * (textY + anchorY)) +
-        ')' +
-        (scale < 1 ?
-            'scale(' + scale + ')' : ''
+        lib.strTranslate(
+            targetX - scale * (textX + anchorX),
+            targetY - scale * (textY + anchorY)
         ) +
+        lib.strScale(scale) +
         (rotate ?
             'rotate(' + rotate +
                 (noCenter ? '' : ' ' + textX + ' ' + textY) +
@@ -46903,6 +47120,7 @@ exports.interp = function(arr, n) {
 var d3 = _dereq_('d3');
 
 var Lib = _dereq_('../lib');
+var strTranslate = Lib.strTranslate;
 var xmlnsNamespaces = _dereq_('../constants/xmlns_namespaces');
 var LINE_SPACING = _dereq_('../constants/alignment').LINE_SPACING;
 
@@ -47017,7 +47235,7 @@ exports.convertToTspans = function(_context, gd, _callback) {
                 if(svgClass[0] === 'y') {
                     mathjaxGroup.attr({
                         transform: 'rotate(' + [-90, +_context.attr('x'), +_context.attr('y')] +
-                        ') translate(' + [-newSvgW / 2, dy - newSvgH / 2] + ')'
+                        ')' + strTranslate(-newSvgW / 2, dy - newSvgH / 2)
                     });
                     newSvg.attr({x: +_context.attr('x'), y: +_context.attr('y')});
                 } else if(svgClass[0] === 'l') {
@@ -54509,7 +54727,7 @@ function lsInner(gd) {
         xa = plotinfo.xaxis;
         ya = plotinfo.yaxis;
 
-        if(plotinfo.bg) {
+        if(plotinfo.bg && xa._offset !== undefined && ya._offset !== undefined) {
             plotinfo.bg
                 .call(Drawing.setRect,
                     xa._offset - pad, ya._offset - pad,
@@ -57186,6 +57404,7 @@ var Plots = _dereq_('../../plots/plots');
 
 var Registry = _dereq_('../../registry');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var Titles = _dereq_('../../components/titles');
 var Color = _dereq_('../../components/color');
@@ -57388,7 +57607,9 @@ var getDataConversions = axes.getDataConversions = function(gd, trace, target, t
     // setup the data-to-calc method.
     if(Array.isArray(d2cTarget)) {
         ax = {
-            type: autoType(targetArray),
+            type: autoType(targetArray, undefined, {
+                autotypenumbers: gd._fullLayout.autotypenumbers
+            }),
             _categories: []
         };
         axes.setConvert(ax);
@@ -59640,17 +59861,31 @@ axes.makeTransFn = function(ax) {
     var axLetter = ax._id.charAt(0);
     var offset = ax._offset;
     return axLetter === 'x' ?
-        function(d) { return 'translate(' + (offset + ax.l2p(d.x)) + ',0)'; } :
-        function(d) { return 'translate(0,' + (offset + ax.l2p(d.x)) + ')'; };
+        function(d) { return strTranslate(offset + ax.l2p(d.x), 0); } :
+        function(d) { return strTranslate(0, offset + ax.l2p(d.x)); };
 };
 
 axes.makeTransPeriodFn = function(ax) {
     var axLetter = ax._id.charAt(0);
     var offset = ax._offset;
     return axLetter === 'x' ?
-        function(d) { return 'translate(' + (offset + ax.l2p(d.periodX !== undefined ? d.periodX : d.x)) + ',0)'; } :
-        function(d) { return 'translate(0,' + (offset + ax.l2p(d.periodX !== undefined ? d.periodX : d.x)) + ')'; };
+        function(d) {
+            return strTranslate(
+                offset + ax.l2p(getPeriodX(d)),
+                0
+            );
+        } :
+        function(d) {
+            return strTranslate(
+                0,
+                offset + ax.l2p(getPeriodX(d))
+            );
+        };
 };
+
+function getPeriodX(d) {
+    return d.periodX !== undefined ? d.periodX : d.x;
+}
 
 /**
  * Make axis tick path string
@@ -60026,7 +60261,7 @@ axes.drawLabels = function(gd, ax, opts) {
             var anchorHeight = labelFns.heightFn(d, isNumeric(angle) ? +angle : 0, (nLines - 1) * lineHeight);
 
             if(anchorHeight) {
-                transform += ' translate(0, ' + anchorHeight + ')';
+                transform += strTranslate(0, anchorHeight);
             }
 
             if(mathjaxGroup.empty()) {
@@ -60037,7 +60272,7 @@ axes.drawLabels = function(gd, ax, opts) {
             } else {
                 var mjWidth = Drawing.bBox(mathjaxGroup.node()).width;
                 var mjShift = mjWidth * {end: -0.5, start: 0.5}[anchor];
-                mathjaxGroup.attr('transform', transform + (mjShift ? 'translate(' + mjShift + ',0)' : ''));
+                mathjaxGroup.attr('transform', transform + strTranslate(mjShift, 0));
             }
         });
     }
@@ -60651,23 +60886,49 @@ var isNumeric = _dereq_('fast-isnumeric');
 var Lib = _dereq_('../../lib');
 var BADNUM = _dereq_('../../constants/numerical').BADNUM;
 
-module.exports = function autoType(array, calendar, opts) {
-    opts = opts || {};
+var isArrayOrTypedArray = Lib.isArrayOrTypedArray;
+var isDateTime = Lib.isDateTime;
+var cleanNumber = Lib.cleanNumber;
+var round = Math.round;
 
-    if(!opts.noMultiCategory && multiCategory(array)) return 'multicategory';
-    if(moreDates(array, calendar)) return 'date';
-    if(category(array)) return 'category';
-    if(linearOK(array)) return 'linear';
-    else return '-';
+module.exports = function autoType(array, calendar, opts) {
+    var a = array;
+
+    var noMultiCategory = opts.noMultiCategory;
+    if(isArrayOrTypedArray(a) && !a.length) return '-';
+    if(!noMultiCategory && multiCategory(a)) return 'multicategory';
+    if(noMultiCategory && Array.isArray(a[0])) { // no need to flat typed arrays here
+        var b = [];
+        for(var i = 0; i < a.length; i++) {
+            if(isArrayOrTypedArray(a[i])) {
+                for(var j = 0; j < a[i].length; j++) {
+                    b.push(a[i][j]);
+                }
+            }
+        }
+        a = b;
+    }
+
+    if(moreDates(a, calendar)) return 'date';
+
+    var convertNumeric = opts.autotypenumbers !== 'strict'; // compare against strict, just in case autotypenumbers was not provided in opts
+    if(category(a, convertNumeric)) return 'category';
+    if(linearOK(a, convertNumeric)) return 'linear';
+
+    return '-';
 };
+
+function hasTypeNumber(v, convertNumeric) {
+    return convertNumeric ? isNumeric(v) : typeof v === 'number';
+}
 
 // is there at least one number in array? If not, we should leave
 // ax.type empty so it can be autoset later
-function linearOK(array) {
-    if(!array) return false;
+function linearOK(a, convertNumeric) {
+    var len = a.length;
 
-    for(var i = 0; i < array.length; i++) {
-        if(isNumeric(array[i])) return true;
+    for(var i = 0; i < len; i++) {
+        if(hasTypeNumber(a[i], convertNumeric)) return true;
     }
 
     return false;
@@ -60680,53 +60941,63 @@ function linearOK(array) {
 // numbers and a few dates
 // as with categories, consider DISTINCT values only.
 function moreDates(a, calendar) {
-    // test at most 1000 points, evenly spaced
-    var inc = Math.max(1, (a.length - 1) / 1000);
-    var dcnt = 0;
-    var ncnt = 0;
+    var len = a.length;
+
+    var inc = getIncrement(len);
+    var dats = 0;
+    var nums = 0;
     var seen = {};
 
-    for(var i = 0; i < a.length; i += inc) {
-        var ai = a[Math.round(i)];
+    for(var f = 0; f < len; f += inc) {
+        var i = round(f);
+        var ai = a[i];
         var stri = String(ai);
         if(seen[stri]) continue;
         seen[stri] = 1;
 
-        if(Lib.isDateTime(ai, calendar)) dcnt += 1;
-        if(isNumeric(ai)) ncnt += 1;
+        if(isDateTime(ai, calendar)) dats++;
+        if(isNumeric(ai)) nums++;
     }
 
-    return (dcnt > ncnt * 2);
+    return dats > nums * 2;
+}
+
+// return increment to test at most 1000 points, evenly spaced
+function getIncrement(len) {
+    return Math.max(1, (len - 1) / 1000);
 }
 
 // are the (x,y)-values in gd.data mostly text?
 // require twice as many DISTINCT categories as distinct numbers
-function category(a) {
-    // test at most 1000 points
-    var inc = Math.max(1, (a.length - 1) / 1000);
-    var curvenums = 0;
-    var curvecats = 0;
+function category(a, convertNumeric) {
+    var len = a.length;
+
+    var inc = getIncrement(len);
+    var nums = 0;
+    var cats = 0;
     var seen = {};
 
-    for(var i = 0; i < a.length; i += inc) {
-        var ai = a[Math.round(i)];
+    for(var f = 0; f < len; f += inc) {
+        var i = round(f);
+        var ai = a[i];
         var stri = String(ai);
         if(seen[stri]) continue;
         seen[stri] = 1;
 
-        if(typeof ai === 'boolean') curvecats++;
-        else if(Lib.cleanNumber(ai) !== BADNUM) curvenums++;
-        else if(typeof ai === 'string') curvecats++;
+        var t = typeof ai;
+        if(t === 'boolean') cats++;
+        else if(convertNumeric ? cleanNumber(ai) !== BADNUM : t === 'number') nums++;
+        else if(t === 'string') cats++;
     }
 
-    return curvecats > curvenums * 2;
+    return cats > nums * 2;
 }
 
 // very-loose requirements for multicategory,
 // trace modules that should never auto-type to multicategory
 // should be declared with 'noMultiCategory'
 function multiCategory(a) {
-    return Lib.isArrayOrTypedArray(a[0]) && Lib.isArrayOrTypedArray(a[1]);
+    return isArrayOrTypedArray(a[0]) && isArrayOrTypedArray(a[1]);
 }
 
 },{"../../constants/numerical":182,"../../lib":203,"fast-isnumeric":23}],250:[function(_dereq_,module,exports){
@@ -61843,6 +62114,7 @@ var supportsPassive = _dereq_('has-passive-events');
 
 var Registry = _dereq_('../../registry');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var Color = _dereq_('../../components/color');
 var Drawing = _dereq_('../../components/drawing');
@@ -62901,7 +63173,7 @@ function makeZoombox(zoomlayer, lum, xs, ys, path0) {
             'fill': lum > 0.2 ? 'rgba(0,0,0,0)' : 'rgba(255,255,255,0)',
             'stroke-width': 0
         })
-        .attr('transform', 'translate(' + xs + ', ' + ys + ')')
+        .attr('transform', strTranslate(xs, ys))
         .attr('d', path0 + 'Z');
 }
 
@@ -62914,7 +63186,7 @@ function makeCorners(zoomlayer, xs, ys) {
             'stroke-width': 1,
             opacity: 0
         })
-        .attr('transform', 'translate(' + xs + ', ' + ys + ')')
+        .attr('transform', strTranslate(xs, ys))
         .attr('d', 'M0,0Z');
 }
 
@@ -63314,6 +63586,8 @@ module.exports = {
 
 'use strict';
 
+var strTranslate = _dereq_('../../lib').strTranslate;
+
 // in v2 (once log ranges are fixed),
 // we'll be able to p2r here for all axis types
 function p2r(ax, v) {
@@ -63344,9 +63618,10 @@ function axValue(ax) {
 }
 
 function getTransform(plotinfo) {
-    return 'translate(' +
-        plotinfo.xaxis._offset + ',' +
-        plotinfo.yaxis._offset + ')';
+    return strTranslate(
+        plotinfo.xaxis._offset,
+        plotinfo.yaxis._offset
+    );
 }
 
 module.exports = {
@@ -63356,7 +63631,7 @@ module.exports = {
     getTransform: getTransform
 };
 
-},{}],260:[function(_dereq_,module,exports){
+},{"../../lib":203}],260:[function(_dereq_,module,exports){
 /**
 * Copyright 2012-2020, Plotly, Inc.
 * All rights reserved.
@@ -64125,6 +64400,14 @@ module.exports = {
         _noTemplating: true,
         
     },
+    autotypenumbers: {
+        valType: 'enumerated',
+        values: ['convert types', 'strict'],
+        dflt: 'convert types',
+        
+        editType: 'calc',
+        
+    },
     autorange: {
         valType: 'enumerated',
         values: [true, false, 'reversed'],
@@ -64789,6 +65072,8 @@ function appendList(cont, k, item) {
 }
 
 module.exports = function supplyLayoutDefaults(layoutIn, layoutOut, fullData) {
+    var autotypenumbersDflt = layoutOut.autotypenumbers;
+
     var ax2traces = {};
     var xaMayHide = {};
     var yaMayHide = {};
@@ -64997,6 +65282,7 @@ module.exports = function supplyLayoutDefaults(layoutIn, layoutOut, fullData) {
             automargin: true,
             visibleDflt: visibleDflt,
             reverseDflt: reverseDflt,
+            autotypenumbersDflt: autotypenumbersDflt,
             splomStash: ((layoutOut._splomAxes || {})[axLetter] || {})[axId]
         };
 
@@ -65061,6 +65347,7 @@ module.exports = function supplyLayoutDefaults(layoutIn, layoutOut, fullData) {
             automargin: true,
             visibleDflt: false,
             reverseDflt: false,
+            autotypenumbersDflt: autotypenumbersDflt,
             splomStash: ((layoutOut._splomAxes || {})[axLetter] || {})[axId]
         };
 
@@ -67744,6 +68031,7 @@ var autoType = _dereq_('./axis_autotype');
  *  name: axis object name (ie 'xaxis') if one should be stored
  */
 module.exports = function handleTypeDefaults(containerIn, containerOut, coerce, options) {
+    coerce('autotypenumbers', options.autotypenumbersDflt);
     var axType = coerce('type', (options.splomStash || {}).type);
 
     if(axType === '-') {
@@ -67795,6 +68083,8 @@ function setAutoType(ax, data) {
     ) {
         opts.noMultiCategory = true;
     }
+
+    opts.autotypenumbers = ax.autotypenumbers;
 
     // check all boxes on this x axis to see
     // if they're dates, numbers, or categories
@@ -68883,6 +69173,14 @@ module.exports = {
         
         dflt: colorAttrs.background,
         editType: 'layoutstyle',
+        
+    },
+    autotypenumbers: {
+        valType: 'enumerated',
+        values: ['convert types', 'strict'],
+        dflt: 'convert types',
+        
+        editType: 'calc',
         
     },
     separators: {
@@ -70542,6 +70840,8 @@ plots.supplyLayoutGlobalDefaults = function(layoutIn, layoutOut, formatObj) {
         layoutOut._dataTemplate = template.data;
     }
 
+    coerce('autotypenumbers');
+
     var globalFont = Lib.coerceFont(coerce, 'font');
 
     coerce('title.text', layoutOut._dfltTitle.plot);
@@ -70930,6 +71230,9 @@ function initMargins(fullLayout) {
     if(!fullLayout._pushmarginIds) fullLayout._pushmarginIds = {};
 }
 
+var minFinalWidth = 64; // could possibly be exposed as layout.margin.minfinalwidth
+var minFinalHeight = 64; // could possibly be exposed as layout.margin.minfinalheight
+
 /**
  * autoMargin: called by components that may need to expand the margins to
  * be rendered on-plot.
@@ -70947,6 +71250,10 @@ function initMargins(fullLayout) {
  */
 plots.autoMargin = function(gd, id, o) {
     var fullLayout = gd._fullLayout;
+    var width = fullLayout.width;
+    var height = fullLayout.height;
+    var maxSpaceW = Math.max(0, width - minFinalWidth);
+    var maxSpaceH = Math.max(0, height - minFinalHeight);
 
     var pushMargin = fullLayout._pushmargin;
     var pushMarginIds = fullLayout._pushmarginIds;
@@ -70966,13 +71273,15 @@ plots.autoMargin = function(gd, id, o) {
 
             // if the item is too big, just give it enough automargin to
             // make sure you can still grab it and bring it back
-            if(o.l + o.r > fullLayout.width * 0.5) {
-                Lib.log('Margin push', id, 'is too big in x, dropping');
-                o.l = o.r = 0;
+            var rW = (o.l + o.r) / maxSpaceW;
+            if(rW > 1) {
+                o.l /= rW;
+                o.r /= rW;
             }
-            if(o.b + o.t > fullLayout.height * 0.5) {
-                Lib.log('Margin push', id, 'is too big in y, dropping');
-                o.b = o.t = 0;
+            var rH = (o.t + o.b) / maxSpaceH;
+            if(rH > 1) {
+                o.t /= rH;
+                o.b /= rH;
             }
 
             var xl = o.xl !== undefined ? o.xl : o.x;
@@ -70997,6 +71306,11 @@ plots.autoMargin = function(gd, id, o) {
 
 plots.doAutoMargin = function(gd) {
     var fullLayout = gd._fullLayout;
+    var width = fullLayout.width;
+    var height = fullLayout.height;
+    var maxSpaceW = Math.max(0, width - minFinalWidth);
+    var maxSpaceH = Math.max(0, height - minFinalHeight);
+
     if(!fullLayout._size) fullLayout._size = {};
     initMargins(fullLayout);
 
@@ -71011,8 +71325,6 @@ plots.doAutoMargin = function(gd) {
     var mr = margin.r;
     var mt = margin.t;
     var mb = margin.b;
-    var width = fullLayout.width;
-    var height = fullLayout.height;
     var pushMargin = fullLayout._pushmargin;
     var pushMarginIds = fullLayout._pushmarginIds;
 
@@ -71044,11 +71356,10 @@ plots.doAutoMargin = function(gd) {
                 if(isNumeric(pl) && pushMargin[k2].r) {
                     var fr = pushMargin[k2].r.val;
                     var pr = pushMargin[k2].r.size;
-
                     if(fr > fl) {
                         var newL = (pl * fr + (pr - width) * fl) / (fr - fl);
                         var newR = (pr * (1 - fl) + (pl - width) * (1 - fr)) / (fr - fl);
-                        if(newL >= 0 && newR >= 0 && width - (newL + newR) > 0 && newL + newR > ml + mr) {
+                        if(newL + newR > ml + mr) {
                             ml = newL;
                             mr = newR;
                         }
@@ -71058,11 +71369,10 @@ plots.doAutoMargin = function(gd) {
                 if(isNumeric(pb) && pushMargin[k2].t) {
                     var ft = pushMargin[k2].t.val;
                     var pt = pushMargin[k2].t.size;
-
                     if(ft > fb) {
                         var newB = (pb * ft + (pt - height) * fb) / (ft - fb);
                         var newT = (pt * (1 - fb) + (pb - height) * (1 - ft)) / (ft - fb);
-                        if(newB >= 0 && newT >= 0 && height - (newT + newB) > 0 && newB + newT > mb + mt) {
+                        if(newB + newT > mb + mt) {
                             mb = newB;
                             mt = newT;
                         }
@@ -71070,6 +71380,18 @@ plots.doAutoMargin = function(gd) {
                 }
             }
         }
+    }
+
+    var rW = (ml + mr) / maxSpaceW;
+    if(rW > 1) {
+        ml /= rW;
+        mr /= rW;
+    }
+
+    var rH = (mb + mt) / maxSpaceH;
+    if(rH > 1) {
+        mb /= rH;
+        mt /= rH;
     }
 
     gs.l = Math.round(ml);
@@ -74678,6 +75000,7 @@ var tinycolor = _dereq_('tinycolor2');
 
 var Registry = _dereq_('../../registry');
 var Lib = _dereq_('../../lib');
+var strTranslate = Lib.strTranslate;
 var _ = Lib._;
 var Color = _dereq_('../../components/color');
 var Drawing = _dereq_('../../components/drawing');
@@ -74965,7 +75288,7 @@ proto.adjustLayout = function(ternaryLayout, graphSize) {
     var triangleClipRelative = 'M0,' + h + 'h' + w + 'l-' + (w / 2) + ',-' + h + 'Z';
     _this.clipDefRelative.select('path').attr('d', triangleClipRelative);
 
-    var plotTransform = 'translate(' + x0 + ',' + y0 + ')';
+    var plotTransform = strTranslate(x0, y0);
     _this.plotContainer.selectAll('.scatterlayer,.maplayer')
         .attr('transform', plotTransform);
 
@@ -74974,18 +75297,18 @@ proto.adjustLayout = function(ternaryLayout, graphSize) {
     // TODO: shift axes to accommodate linewidth*sin(30) tick mark angle
 
     // TODO: there's probably an easier way to handle these translations/offsets now...
-    var bTransform = 'translate(' + (x0 - baxis._offset) + ',' + (y0 + h) + ')';
+    var bTransform = strTranslate(x0 - baxis._offset, y0 + h);
 
     _this.layers.baxis.attr('transform', bTransform);
     _this.layers.bgrid.attr('transform', bTransform);
 
-    var aTransform = 'translate(' + (x0 + w / 2) + ',' + y0 +
-        ')rotate(30)translate(0,' + -aaxis._offset + ')';
+    var aTransform = strTranslate(x0 + w / 2, y0) +
+        'rotate(30)' + strTranslate(0, -aaxis._offset);
     _this.layers.aaxis.attr('transform', aTransform);
     _this.layers.agrid.attr('transform', aTransform);
 
-    var cTransform = 'translate(' + (x0 + w / 2) + ',' + y0 +
-        ')rotate(-30)translate(0,' + -caxis._offset + ')';
+    var cTransform = strTranslate(x0 + w / 2, y0) +
+        'rotate(-30)' + strTranslate(0, -caxis._offset);
     _this.layers.caxis.attr('transform', cTransform);
     _this.layers.cgrid.attr('transform', cTransform);
 
@@ -75252,7 +75575,7 @@ proto.initInteractions = function() {
 
         zb = zoomLayer.append('path')
             .attr('class', 'zoombox')
-            .attr('transform', 'translate(' + _this.x0 + ', ' + _this.y0 + ')')
+            .attr('transform', strTranslate(_this.x0, _this.y0))
             .style({
                 'fill': lum > 0.2 ? 'rgba(0,0,0,0)' : 'rgba(255,255,255,0)',
                 'stroke-width': 0
@@ -75261,7 +75584,7 @@ proto.initInteractions = function() {
 
         corners = zoomLayer.append('path')
             .attr('class', 'zoombox-corners')
-            .attr('transform', 'translate(' + _this.x0 + ', ' + _this.y0 + ')')
+            .attr('transform', strTranslate(_this.x0, _this.y0))
             .style({
                 fill: Color.background,
                 stroke: Color.defaultLine,
@@ -75378,11 +75701,11 @@ proto.initInteractions = function() {
         }
 
         // move the data (translate, don't redraw)
-        var plotTransform = 'translate(' + (_this.x0 + dx) + ',' + (_this.y0 + dy) + ')';
+        var plotTransform = strTranslate(_this.x0 + dx, _this.y0 + dy);
         _this.plotContainer.selectAll('.scatterlayer,.maplayer')
             .attr('transform', plotTransform);
 
-        var plotTransform2 = 'translate(' + -dx + ',' + -dy + ')';
+        var plotTransform2 = strTranslate(-dx, -dy);
         _this.clipDefRelative.select('path').attr('transform', plotTransform2);
 
         // move the ticks
@@ -80856,6 +81179,11 @@ function handleSampleDefaults(traceIn, traceOut, coerce, layout) {
     var yLen = yDims && Lib.minRowLength(y);
     var xLen = xDims && Lib.minRowLength(x);
 
+    var calendar = layout.calendar;
+    var opts = {
+        autotypenumbers: layout.autotypenumbers
+    };
+
     var defaultOrientation, len;
     if(traceOut._hasPreCompStats) {
         switch(String(xDims) + String(yDims)) {
@@ -80907,7 +81235,7 @@ function handleSampleDefaults(traceIn, traceOut, coerce, layout) {
                 var hasCategories = false;
                 var i;
                 for(i = 0; i < x.length; i++) {
-                    if(autoType(x[i]) === 'category') {
+                    if(autoType(x[i], calendar, opts) === 'category') {
                         hasCategories = true;
                         break;
                     }
@@ -80918,7 +81246,7 @@ function handleSampleDefaults(traceIn, traceOut, coerce, layout) {
                     len = Math.min(sLen, xLen, y.length);
                 } else {
                     for(i = 0; i < y.length; i++) {
-                        if(autoType(y[i]) === 'category') {
+                        if(autoType(y[i], calendar, opts) === 'category') {
                             hasCategories = true;
                             break;
                         }
@@ -89643,6 +89971,8 @@ var Fx = _dereq_('../../components/fx');
 var Color = _dereq_('../../components/color');
 var Drawing = _dereq_('../../components/drawing');
 var Lib = _dereq_('../../lib');
+var strScale = Lib.strScale;
+var strTranslate = Lib.strTranslate;
 var svgTextUtils = _dereq_('../../lib/svg_text_utils');
 var uniformText = _dereq_('../bar/uniform_text');
 var recordMinTextSize = uniformText.recordMinTextSize;
@@ -89872,9 +90202,9 @@ function plot(gd, cdModule) {
                 }
 
                 titleText.attr('transform',
-                    'translate(' + transform.x + ',' + transform.y + ')' +
-                    (transform.scale < 1 ? ('scale(' + transform.scale + ')') : '') +
-                    'translate(' + transform.tx + ',' + transform.ty + ')');
+                    strTranslate(transform.x, transform.y) +
+                    strScale(Math.min(1, transform.scale)) +
+                    strTranslate(transform.tx, transform.ty));
             });
 
             // now make sure no labels overlap (at least within one pie)
